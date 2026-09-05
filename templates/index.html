@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM Router</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2e38;
+    --text: #e8e9ec;
+    --muted: #9aa0ab;
+    --claude: #d97757;
+    --chatgpt: #10a37f;
+    --gemini: #4285f4;
+    --grok: #e8e9ec;
+    --perplexity: #20808d;
+    --deepseek: #536dfe;
+    --accent: #6c7cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--panel);
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  .btn {
+    background: transparent; border: 1px solid var(--border); color: var(--text);
+    padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;
+  }
+  .btn:hover { border-color: var(--accent); }
+  #chat { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+  .msg { max-width: 70%; padding: 10px 14px; border-radius: 10px; line-height: 1.45; white-space: pre-wrap; }
+  .msg.user { align-self: flex-end; background: var(--accent); color: white; }
+  .msg.assistant { align-self: flex-start; background: var(--panel); border: 1px solid var(--border); }
+  .msg.error { align-self: center; background: #3a1f1f; border: 1px solid #6b2b2b; color: #f4a3a3; font-size: 13px; }
+  .badge {
+    display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px;
+    margin-bottom: 6px; font-weight: 600;
+  }
+  .badge.claude { background: rgba(217,119,87,0.18); color: var(--claude); }
+  .badge.chatgpt { background: rgba(16,163,127,0.18); color: var(--chatgpt); }
+  .badge.gemini { background: rgba(66,133,244,0.18); color: var(--gemini); }
+  .badge.grok { background: rgba(232,233,236,0.18); color: var(--grok); }
+  .badge.perplexity { background: rgba(32,128,141,0.18); color: var(--perplexity); }
+  .badge.deepseek { background: rgba(83,109,254,0.18); color: var(--deepseek); }
+  .reason { display: block; font-size: 11px; color: var(--muted); margin-top: 6px; }
+  .md-content { line-height: 1.5; white-space: normal; }
+  .md-content p { margin: 0 0 8px; }
+  .md-content p:last-child { margin-bottom: 0; }
+  .md-content pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px; overflow-x: auto; font-size: 12px; }
+  .md-content code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+  .md-content pre code { background: none; padding: 0; }
+  .md-content :not(pre) > code { background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 4px; }
+  .md-content ul, .md-content ol { margin: 4px 0 8px; padding-left: 20px; }
+  .md-content a { color: var(--accent); }
+  #inputbar { display: flex; gap: 10px; padding: 16px 20px; border-top: 1px solid var(--border); background: var(--panel); }
+  #override { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0 10px; font-size: 13px; }
+  #message {
+    flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 10px 12px; font-size: 14px; resize: none; font-family: inherit;
+  }
+  #send { background: var(--accent); border: none; color: white; padding: 0 20px; border-radius: 8px; cursor: pointer; font-weight: 600; }
+  #send:disabled { opacity: 0.5; cursor: default; }
+  .modal-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    align-items: center; justify-content: center; z-index: 10;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 24px; width: 420px; max-width: 90vw; }
+  .modal h2 { margin-top: 0; font-size: 16px; }
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .field input {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    padding: 8px 10px; border-radius: 6px; font-size: 13px;
+  }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+  .key-status { font-size: 11px; margin-left: 6px; }
+  .key-status.ok { color: var(--chatgpt); }
+  .key-status.missing { color: var(--muted); }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>LLM Router</h1>
+    <div class="sub">Auto-routes each message to Claude, ChatGPT, or Gemini</div>
+  </div>
+  <div style="display:flex; gap:8px;">
+    <button class="btn" id="resetBtn">New chat</button>
+    <button class="btn" id="exportBtn">Export</button>
+    <button class="btn" id="settingsBtn">Settings</button>
+    {% if password_protected %}<button class="btn" id="logoutBtn">Log out</button>{% endif %}
+  </div>
+</header>
+
+<div id="chat"></div>
+
+<div id="inputbar">
+  <select id="override">
+    <option value="auto">Auto</option>
+    <option value="claude">Force Claude</option>
+    <option value="chatgpt">Force ChatGPT</option>
+    <option value="gemini">Force Gemini</option>
+    <option value="grok">Force Grok</option>
+    <option value="perplexity">Force Perplexity</option>
+    <option value="deepseek">Force DeepSeek</option>
+  </select>
+  <textarea id="message" rows="1" placeholder="Ask anything..."></textarea>
+  <button id="send">Send</button>
+</div>
+
+<div class="modal-overlay" id="settingsModal">
+  <div class="modal">
+    <h2>API Keys &amp; Models</h2>
+    <div class="field">
+      <label>Anthropic (Claude) API key
+        <span class="key-status {{ 'ok' if key_status.anthropic else 'missing' }}">{{ '● set' if key_status.anthropic else '○ not set' }}</span>
+      </label>
+      <input type="password" id="anthropic_api_key" placeholder="sk-ant-...">
+    </div>
+    <div class="field">
+      <label>Claude model</label>
+      <input type="text" id="anthropic_model" value="{{ cfg.anthropic_model }}">
+    </div>
+    <div class="field">
+      <label>OpenAI (ChatGPT) API key
+        <span class="key-status {{ 'ok' if key_status.openai else 'missing' }}">{{ '● set' if key_status.openai else '○ not set' }}</span>
+      </label>
+      <input type="password" id="openai_api_key" placeholder="sk-...">
+    </div>
+    <div class="field">
+      <label>ChatGPT model</label>
+      <input type="text" id="openai_model" value="{{ cfg.openai_model }}">
+    </div>
+    <div class="field">
+      <label>Google (Gemini) API key
+        <span class="key-status {{ 'ok' if key_status.google else 'missing' }}">{{ '● set' if key_status.google else '○ not set' }}</span>
+      </label>
+      <input type="password" id="google_api_key" placeholder="AIza...">
+    </div>
+    <div class="field">
+      <label>Gemini model</label>
+      <input type="text" id="google_model" value="{{ cfg.google_model }}">
+    </div>
+    <div class="field">
+      <label>xAI (Grok) API key
+        <span class="key-status {{ 'ok' if key_status.xai else 'missing' }}">{{ '● set' if key_status.xai else '○ not set' }}</span>
+      </label>
+      <input type="password" id="xai_api_key" placeholder="xai-...">
+    </div>
+    <div class="field">
+      <label>Grok model</label>
+      <input type="text" id="xai_model" value="{{ cfg.xai_model }}">
+    </div>
+    <div class="field">
+      <label>Perplexity API key
+        <span class="key-status {{ 'ok' if key_status.perplexity else 'missing' }}">{{ '● set' if key_status.perplexity else '○ not set' }}</span>
+      </label>
+      <input type="password" id="perplexity_api_key" placeholder="pplx-...">
+    </div>
+    <div class="field">
+      <label>Perplexity preset</label>
+      <input type="text" id="perplexity_preset" value="{{ cfg.perplexity_preset }}">
+    </div>
+    <div class="field">
+      <label>DeepSeek API key
+        <span class="key-status {{ 'ok' if key_status.deepseek else 'missing' }}">{{ '● set' if key_status.deepseek else '○ not set' }}</span>
+      </label>
+      <input type="password" id="deepseek_api_key" placeholder="sk-...">
+    </div>
+    <div class="field">
+      <label>DeepSeek model</label>
+      <input type="text" id="deepseek_model" value="{{ cfg.deepseek_model }}">
+    </div>
+    <div class="field" style="border-top: 1px solid var(--border); padding-top: 14px;">
+      <label>App password (protects this app on your Wi-Fi)
+        <span class="key-status {{ 'ok' if key_status.password else 'missing' }}">{{ '● set' if key_status.password else '○ not set' }}</span>
+      </label>
+      <input type="password" id="app_password" placeholder="{{ 'Leave blank to keep current password' if key_status.password else 'Leave blank for no login' }}">
+      {% if key_status.password %}<button class="btn" id="clearPasswordBtn" style="margin-top:8px; font-size:12px;">Remove password</button>{% endif %}
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="closeSettings">Cancel</button>
+      <button class="btn" id="saveSettings" style="border-color: var(--accent);">Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+<script>
+const chatEl = document.getElementById('chat');
+const messageEl = document.getElementById('message');
+const sendBtn = document.getElementById('send');
+const overrideEl = document.getElementById('override');
+
+function addMessage(role, text) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  div.appendChild(document.createTextNode(text));
+  chatEl.appendChild(div);
+  chatEl.scrollTop = chatEl.scrollHeight;
+  return div;
+}
+
+function startAssistantMessage(modelKey, modelLabel, reason) {
+  const div = document.createElement('div');
+  div.className = 'msg assistant';
+  const badge = document.createElement('span');
+  badge.className = 'badge ' + modelKey;
+  badge.textContent = modelLabel;
+  div.appendChild(badge);
+  div.appendChild(document.createElement('br'));
+  const content = document.createElement('div');
+  content.className = 'md-content';
+  div.appendChild(content);
+  if (reason) {
+    const reasonEl = document.createElement('span');
+    reasonEl.className = 'reason';
+    reasonEl.textContent = reason;
+    div.appendChild(reasonEl);
+  }
+  chatEl.appendChild(div);
+  chatEl.scrollTop = chatEl.scrollHeight;
+  return content;
+}
+
+// Renders markdown safely; falls back to plain text if the CDN libraries
+// didn't load (e.g. offline) rather than risking unsanitized HTML.
+function renderMarkdown(el, text) {
+  if (window.marked && window.DOMPurify) {
+    el.innerHTML = DOMPurify.sanitize(marked.parse(text));
+  } else {
+    el.textContent = text;
+  }
+}
+
+// Parses one Server-Sent-Events "event: X\ndata: Y" block into {event, data}.
+function parseSseBlock(block) {
+  let eventName = 'message';
+  let dataStr = '';
+  for (const line of block.split('\n')) {
+    if (line.startsWith('event: ')) eventName = line.slice(7).trim();
+    else if (line.startsWith('data: ')) dataStr += line.slice(6);
+  }
+  let payload = {};
+  try { payload = JSON.parse(dataStr); } catch (e) { /* ignore partial/malformed block */ }
+  return { event: eventName, data: payload };
+}
+
+async function send() {
+  const text = messageEl.value.trim();
+  if (!text) return;
+  addMessage('user', text);
+  messageEl.value = '';
+  sendBtn.disabled = true;
+
+  try {
+    const res = await fetch('/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text, override: overrideEl.value })
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      addMessage('error', data.error || 'Something went wrong.');
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let contentEl = null;
+    let rawText = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split('\n\n');
+      buffer = blocks.pop(); // keep the trailing partial block for next read
+      for (const block of blocks) {
+        if (!block.trim()) continue;
+        const { event, data } = parseSseBlock(block);
+        if (event === 'meta') {
+          contentEl = startAssistantMessage(data.model, data.model_label, data.reason);
+          rawText = '';
+        } else if (event === 'delta' && contentEl) {
+          rawText += data.text;
+          renderMarkdown(contentEl, rawText);
+          chatEl.scrollTop = chatEl.scrollHeight;
+        } else if (event === 'error') {
+          addMessage('error', data.error || 'Something went wrong.');
+        }
+      }
+    }
+  } catch (err) {
+    addMessage('error', 'Network error: ' + err.message);
+  } finally {
+    sendBtn.disabled = false;
+    messageEl.focus();
+  }
+}
+
+sendBtn.addEventListener('click', send);
+messageEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+
+document.getElementById('resetBtn').addEventListener('click', async () => {
+  await fetch('/reset', { method: 'POST' });
+  chatEl.innerHTML = '';
+});
+
+document.getElementById('exportBtn').addEventListener('click', () => {
+  window.location.href = '/export?format=md';
+});
+
+const clearPasswordBtn = document.getElementById('clearPasswordBtn');
+if (clearPasswordBtn) {
+  clearPasswordBtn.addEventListener('click', async () => {
+    await fetch('/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clear_password: true })
+    });
+    location.reload();
+  });
+}
+
+const logoutBtn = document.getElementById('logoutBtn');
+if (logoutBtn) {
+  logoutBtn.addEventListener('click', async () => {
+    await fetch('/logout', { method: 'POST' });
+    location.reload();
+  });
+}
+
+const MODEL_LABELS = {
+  claude: 'Claude (Anthropic)', chatgpt: 'ChatGPT (OpenAI)', gemini: 'Gemini (Google)',
+  grok: 'Grok (xAI)', perplexity: 'Perplexity', deepseek: 'DeepSeek',
+};
+
+(async function loadHistory() {
+  try {
+    const res = await fetch('/history');
+    const data = await res.json();
+    for (const m of data.messages || []) {
+      if (m.role === 'user') {
+        addMessage('user', m.content);
+      } else {
+        const label = MODEL_LABELS[m.model] || 'Assistant';
+        const contentEl = startAssistantMessage(m.model || 'claude', label, '');
+        renderMarkdown(contentEl, m.content);
+      }
+    }
+  } catch (err) {
+    // No prior history, or the server isn't reachable yet — start fresh.
+  }
+})();
+
+const modal = document.getElementById('settingsModal');
+document.getElementById('settingsBtn').addEventListener('click', () => modal.classList.add('open'));
+document.getElementById('closeSettings').addEventListener('click', () => modal.classList.remove('open'));
+
+document.getElementById('saveSettings').addEventListener('click', async () => {
+  const payload = {
+    anthropic_api_key: document.getElementById('anthropic_api_key').value,
+    anthropic_model: document.getElementById('anthropic_model').value,
+    openai_api_key: document.getElementById('openai_api_key').value,
+    openai_model: document.getElementById('openai_model').value,
+    google_api_key: document.getElementById('google_api_key').value,
+    google_model: document.getElementById('google_model').value,
+    xai_api_key: document.getElementById('xai_api_key').value,
+    xai_model: document.getElementById('xai_model').value,
+    perplexity_api_key: document.getElementById('perplexity_api_key').value,
+    perplexity_preset: document.getElementById('perplexity_preset').value,
+    deepseek_api_key: document.getElementById('deepseek_api_key').value,
+    deepseek_model: document.getElementById('deepseek_model').value,
+    app_password: document.getElementById('app_password').value,
+  };
+  await fetch('/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  location.reload();
+});
+</script>
+
+</body>
+</html>
