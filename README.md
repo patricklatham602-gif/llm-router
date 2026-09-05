@@ -27,6 +27,10 @@ since spaces already prevent that kind of false positive.
 
 - **Streaming.** Replies stream in token-by-token instead of waiting for the
   full response.
+- **Ask All.** The **Ask All** button next to Send sends your message to
+  every provider that has an API key set, all at once — each reply streams
+  into its own bubble concurrently, rather than the normal one-model-per-message
+  routing.
 - **Auto thinking level.** Alongside picking which model answers, `app.py`
   also picks how hard it should think — `pick_thinking_level()` reads the
   message for complexity signals (length, phrases like "step by step" or

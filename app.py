@@ -1,5 +1,6 @@
 import json
 import os
+import queue
 import re
 import threading
 from datetime import timedelta
@@ -346,6 +347,24 @@ KEY_FIELD = {
 }
 
 
+def run_model_for_broadcast(model, cfg, history, thinking_level, reason, q):
+    """Runs one provider's call in its own thread for '/chat/stream_all',
+    pushing (event, payload) tuples onto a shared queue so the request
+    handler can interleave output from every model as it streams in,
+    rather than waiting for each one to finish before starting the next."""
+    q.put(("meta", {"model": model, "model_label": LABELS[model], "reason": reason}))
+    chunks = []
+    try:
+        for piece in CALLERS[model](cfg, history, thinking_level):
+            chunks.append(piece)
+            q.put(("delta", {"model": model, "text": piece}))
+    except Exception as exc:
+        q.put(("error", {"model": model, "error": f"{LABELS[model]} call failed: {exc}"}))
+        q.put(("model_done", {"model": model, "ok": False}))
+        return
+    q.put(("model_done", {"model": model, "ok": True, "content": "".join(chunks)}))
+
+
 # ---------------------------------------------------------------------------
 # Optional password gate. Off by default (no app_password_hash set). Worth
 # turning on once the server binds to 0.0.0.0 — otherwise anyone on the same
@@ -518,6 +537,66 @@ def chat_stream():
             return
         with CONVERSATION_LOCK:
             history.append({"role": "assistant", "content": "".join(chunks), "model": model})
+            save_conversation()
+        yield sse("done", {})
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream")
+
+
+@app.route("/chat/stream_all", methods=["POST"])
+def chat_stream_all():
+    cfg = load_config()
+    data = request.get_json(force=True)
+    message = (data.get("message") or "").strip()
+    if not message:
+        return jsonify({"error": "Empty message"}), 400
+
+    available = [m for m in CALLERS if cfg.get(KEY_FIELD[m])]
+    if not available:
+        return jsonify({"error": "No API keys set for any provider. Add at least one in Settings."}), 400
+
+    history = get_conversation()
+    with CONVERSATION_LOCK:
+        history.append({"role": "user", "content": message})
+        save_conversation()
+
+    thinking_level, thinking_why = pick_thinking_level(message)
+    reason = f"Asked all models. Thinking: {thinking_level} ({thinking_why})."
+
+    def sse(event, payload):
+        return f"event: {event}\ndata: {json.dumps(payload)}\n\n"
+
+    def generate():
+        q = queue.Queue()
+        threads = [
+            threading.Thread(
+                target=run_model_for_broadcast,
+                args=(model, cfg, history, thinking_level, reason, q),
+                daemon=True,
+            )
+            for model in available
+        ]
+        for t in threads:
+            t.start()
+
+        remaining = set(available)
+        results = {}
+        while remaining:
+            event, payload = q.get()
+            if event == "model_done":
+                remaining.discard(payload["model"])
+                results[payload["model"]] = payload
+                yield sse("model_done", {"model": payload["model"], "ok": payload["ok"]})
+            else:
+                yield sse(event, payload)
+
+        with CONVERSATION_LOCK:
+            # Same order every time regardless of which model answered
+            # first, so a reload doesn't reshuffle the bubbles.
+            for model in available:
+                result = results.get(model)
+                if result and result["ok"]:
+                    history.append({"role": "assistant", "content": result["content"], "model": model})
             save_conversation()
         yield sse("done", {})
 
