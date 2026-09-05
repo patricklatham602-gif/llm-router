@@ -30,6 +30,15 @@
   }
   header h1 { font-size: 16px; margin: 0; font-weight: 600; }
   header .sub { color: var(--muted); font-size: 12px; }
+  .header-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  @media (max-width: 480px) {
+    header { flex-wrap: wrap; }
+    .header-actions { width: 100%; justify-content: flex-start; }
+    #inputbar { flex-wrap: wrap; }
+    #message { flex-basis: 100%; order: 1; }
+    #override { order: 2; }
+    #send, #sendAll { order: 3; flex: 1; }
+  }
   .btn {
     background: transparent; border: 1px solid var(--border); color: var(--text);
     padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;
@@ -67,7 +76,7 @@
     border-radius: 8px; padding: 10px 12px; font-size: 14px; resize: none; font-family: inherit;
   }
   #send { background: var(--accent); border: none; color: white; padding: 0 20px; border-radius: 8px; cursor: pointer; font-weight: 600; }
-  #send:disabled { opacity: 0.5; cursor: default; }
+  #send:disabled, #sendAll:disabled { opacity: 0.5; cursor: default; }
   .modal-overlay {
     display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
     align-items: center; justify-content: center; z-index: 10;
@@ -94,7 +103,7 @@
     <h1>LLM Router</h1>
     <div class="sub">Auto-routes each message to Claude, ChatGPT, or Gemini</div>
   </div>
-  <div style="display:flex; gap:8px;">
+  <div class="header-actions">
     <button class="btn" id="resetBtn">New chat</button>
     <button class="btn" id="exportBtn">Export</button>
     <button class="btn" id="settingsBtn">Settings</button>
@@ -116,6 +125,7 @@
   </select>
   <textarea id="message" rows="1" placeholder="Ask anything..."></textarea>
   <button id="send">Send</button>
+  <button id="sendAll" class="btn" title="Send to every model with an API key set">Ask All</button>
 </div>
 
 <div class="modal-overlay" id="settingsModal">
@@ -201,6 +211,7 @@
 const chatEl = document.getElementById('chat');
 const messageEl = document.getElementById('message');
 const sendBtn = document.getElementById('send');
+const sendAllBtn = document.getElementById('sendAll');
 const overrideEl = document.getElementById('override');
 
 function addMessage(role, text) {
@@ -316,6 +327,68 @@ sendBtn.addEventListener('click', send);
 messageEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
 });
+
+// Sends the message to every provider with an API key set at once, showing
+// each model's reply in its own bubble as it streams in — unlike the normal
+// Send button, which routes to a single model.
+async function sendAll() {
+  const text = messageEl.value.trim();
+  if (!text) return;
+  addMessage('user', text);
+  messageEl.value = '';
+  sendBtn.disabled = true;
+  sendAllBtn.disabled = true;
+
+  try {
+    const res = await fetch('/chat/stream_all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text })
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      addMessage('error', data.error || 'Something went wrong.');
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const contentEls = {};
+    const rawTexts = {};
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split('\n\n');
+      buffer = blocks.pop(); // keep the trailing partial block for next read
+      for (const block of blocks) {
+        if (!block.trim()) continue;
+        const { event, data } = parseSseBlock(block);
+        if (event === 'meta') {
+          contentEls[data.model] = startAssistantMessage(data.model, data.model_label, data.reason);
+          rawTexts[data.model] = '';
+        } else if (event === 'delta' && contentEls[data.model]) {
+          rawTexts[data.model] += data.text;
+          renderMarkdown(contentEls[data.model], rawTexts[data.model]);
+          chatEl.scrollTop = chatEl.scrollHeight;
+        } else if (event === 'error') {
+          addMessage('error', data.error || 'Something went wrong.');
+        }
+      }
+    }
+  } catch (err) {
+    addMessage('error', 'Network error: ' + err.message);
+  } finally {
+    sendBtn.disabled = false;
+    sendAllBtn.disabled = false;
+    messageEl.focus();
+  }
+}
+
+sendAllBtn.addEventListener('click', sendAll);
 
 document.getElementById('resetBtn').addEventListener('click', async () => {
   await fetch('/reset', { method: 'POST' });
