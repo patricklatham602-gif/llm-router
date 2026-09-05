@@ -1,0 +1,6 @@
+flask
+gunicorn
+anthropic
+openai
+google-genai
+perplexityai

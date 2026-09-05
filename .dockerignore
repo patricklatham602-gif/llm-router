@@ -1,0 +1,6 @@
+config.json
+history.json
+__pycache__/
+*.pyc
+.venv/
+.git/
